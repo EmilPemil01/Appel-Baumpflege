@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState } from "react";
@@ -12,10 +13,19 @@ export default function ForgotPassword() {
     setMsg("");
     setLoading(true);
 
+    // Beweis-Logs (damit klar ist, ob diese Seite wirklich feuert)
+    console.log("[FORGOT_PASSWORD] clicked:", email);
+    console.log("[FORGOT_PASSWORD] supabase url:", process.env.NEXT_PUBLIC_SUPABASE_URL);
+
+    const redirectTo =
+      "https://appel-baumpflege.vercel.app/password-reset?from=FORGOT_PAGE_TEST";
+
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      // 🔴 DAS ist der wichtige Fix
-      redirectTo: "https://appel-baumpflege.vercel.app/password-reset",
+      redirectTo,
     });
+
+    console.log("[FORGOT_PASSWORD] redirectTo used:", redirectTo);
+    console.log("[FORGOT_PASSWORD] result error:", error);
 
     setLoading(false);
 
@@ -24,7 +34,7 @@ export default function ForgotPassword() {
       return;
     }
 
-    setMsg("E-Mail wurde gesendet. Bitte Postfach prüfen.");
+    setMsg("E-Mail wurde gesendet. Bitte Postfach prüfen. (Test: FORGOT_PAGE_TEST)");
   }
 
   return (
@@ -39,8 +49,8 @@ export default function ForgotPassword() {
         style={{ width: "100%", padding: 10, marginBottom: 12 }}
       />
 
-      <button onClick={onReset} disabled={loading}>
-        Passwort zurücksetzen
+      <button onClick={onReset} disabled={loading || !email}>
+        {loading ? "Sende…" : "Passwort zurücksetzen"}
       </button>
 
       {msg && <p>{msg}</p>}
