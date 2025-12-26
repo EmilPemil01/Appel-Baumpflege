@@ -1,30 +1,31 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { supabase } from "../../lib/supabase";
-
 
 export default function LoginPage() {
   const router = useRouter();
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState("");
 
-  // Wenn schon eingeloggt → direkt zur Startseite
+  // Wenn bereits eingeloggt → weiterleiten
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
-        router.replace('/');
+        router.replace("/");
       }
     });
   }, [router]);
 
-  async function handleLogin() {
+  async function handleLogin(e) {
+    e.preventDefault();
     setLoading(true);
-    setError(null);
+    setError("");
 
     const { error } = await supabase.auth.signInWithPassword({
       email,
@@ -34,40 +35,51 @@ export default function LoginPage() {
     setLoading(false);
 
     if (error) {
-      setError(error.message);
+      setError("E-Mail oder Passwort falsch.");
       return;
     }
 
-    router.replace('/');
+    router.replace("/");
   }
 
   return (
     <main style={page}>
       <h1>Login</h1>
 
-      <label>
-        E-Mail
-        <input
-          style={input}
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-      </label>
+      <form onSubmit={handleLogin} style={{ display: "grid", gap: 12 }}>
+        <label>
+          E-Mail
+          <input
+            style={input}
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+        </label>
 
-      <label>
-        Passwort
-        <input
-          style={input}
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-      </label>
+        <label>
+          Passwort
+          <input
+            style={input}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+        </label>
 
-      <button style={btn} onClick={handleLogin} disabled={loading}>
-        {loading ? 'Login…' : 'Login'}
-      </button>
+        <button style={btn} disabled={loading}>
+          {loading ? "Login…" : "Login"}
+        </button>
+      </form>
+
+      {/* 🔑 Forgot Password Link */}
+      <p style={{ textAlign: "center", marginTop: 8 }}>
+        <Link href="/forgot-password" style={forgotLink}>
+          Passwort vergessen?
+        </Link>
+      </p>
 
       {error && <p style={errorText}>{error}</p>}
     </main>
@@ -75,40 +87,46 @@ export default function LoginPage() {
 }
 
 /* =======================
-   Styles (JS, kein TS)
+   Styles
    ======================= */
 
 const page = {
   maxWidth: 400,
-  margin: '60px auto',
+  margin: "60px auto",
   padding: 24,
-  border: '1px solid #ddd',
+  border: "1px solid #ddd",
   borderRadius: 12,
-  display: 'grid',
+  display: "grid",
   gap: 12,
-  fontFamily: 'Arial',
+  fontFamily: "Arial",
 };
 
 const input = {
-  width: '100%',
-  padding: '8px 10px',
+  width: "100%",
+  padding: "8px 10px",
   borderRadius: 8,
-  border: '1px solid #ccc',
+  border: "1px solid #ccc",
   marginTop: 4,
-  boxSizing: 'border-box',
+  boxSizing: "border-box",
 };
 
 const btn = {
-  padding: '10px 14px',
+  padding: "10px 14px",
   borderRadius: 10,
-  border: '1px solid #111',
-  background: '#111',
-  color: 'white',
-  cursor: 'pointer',
+  border: "1px solid #111",
+  background: "#111",
+  color: "white",
+  cursor: "pointer",
   fontWeight: 800,
 };
 
+const forgotLink = {
+  textDecoration: "underline",
+  fontSize: 14,
+};
+
 const errorText = {
-  color: '#c33',
+  color: "#c33",
   fontWeight: 700,
+  textAlign: "center",
 };
