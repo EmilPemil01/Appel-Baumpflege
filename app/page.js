@@ -188,12 +188,10 @@ function ensureLen(arr, len) {
 /* =======================
    Block-Dynamik
    ======================= */
-// 20..240 min => scale 0.66..1.12
 function scaleForDuration(durationMin) {
   const t = clamp((durationMin - 20) / (240 - 20), 0, 1);
   return lerp(0.66, 1.12, t);
 }
-// Welche Infos zeigen
 function infoLevel(durationMin) {
   if (!Number.isFinite(durationMin)) return 0;
   if (durationMin < 50) return 0;
@@ -205,11 +203,9 @@ function infoLevel(durationMin) {
 /* =======================
    SUPABASE HELPERS
    ======================= */
-// People list kann jsonb oder text[] sein. Wir behandeln beides als Array<string>.
 function normalizePeopleList(pl) {
   if (!pl) return [];
   if (Array.isArray(pl)) return pl.map((x) => String(x ?? "").trim()).filter(Boolean);
-  // falls Supabase komisch liefert
   try {
     const parsed = typeof pl === "string" ? JSON.parse(pl) : pl;
     return Array.isArray(parsed) ? parsed.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
@@ -221,6 +217,7 @@ function normalizePeopleList(pl) {
 function rowToEinsatz(r) {
   return {
     id: r.id,
+    orgId: r.org_id ?? null,
     kunde: r.kunde ?? "",
     ort: r.ort ?? "",
     notiz: r.notiz ?? "",
@@ -235,11 +232,11 @@ function rowToEinsatz(r) {
   };
 }
 
-function einsatzToInsertPayload(e, userId) {
+function einsatzToPayload(e, userId, orgId) {
   return {
-    // id optional, Supabase kann default gen_random_uuid() machen – aber du hast oft client-seitig id
     id: e.id,
     user_id: userId,
+    org_id: orgId, // ✅ WICHTIG für Multi-Tenant
     kunde: e.kunde,
     ort: e.ort,
     notiz: e.notiz,
@@ -248,7 +245,7 @@ function einsatzToInsertPayload(e, userId) {
     bis: e.bis,
     dauer: e.dauer,
     people_count: e.peopleCount,
-    people_list: e.peopleList, // jsonb / text[] -> array passt
+    people_list: e.peopleList,
     status: e.status,
     updated_at: new Date().toISOString(),
   };
@@ -264,6 +261,11 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
   const [userEmail, setUserEmail] = useState(null);
   const [userId, setUserId] = useState(null);
+
+  // 🧩 ORG / ROLLE
+  const [orgId, setOrgId] = useState(null);
+  const [userRole, setUserRole] = useState(null); // "admin" | "viewer"
+  const isAdmin = userRole === "admin";
 
   // DB-Loading
   const [dataLoading, setDataLoading] = useState(false);
@@ -328,6 +330,8 @@ export default function Home() {
       if (!session) {
         setUserEmail(null);
         setUserId(null);
+        setOrgId(null);
+        setUserRole(null);
         setAuthLoading(true);
         router.replace("/login");
       } else {
@@ -348,16 +352,42 @@ export default function Home() {
     router.replace("/login");
   }
 
-  // 📥 Einsätze laden (Supabase)
+  // 🧩 Org + Rolle laden (über Helper View)
   useEffect(() => {
     if (!userId) return;
 
     (async () => {
+      setError("");
+
+      const { data, error: err } = await supabase
+        .from("my_org")
+        .select("org_id, role")
+        .single();
+
+      if (err) {
+        setOrgId(null);
+        setUserRole(null);
+        setError(`Org/Rolle laden fehlgeschlagen: ${err.message}`);
+        return;
+      }
+
+      setOrgId(data.org_id);
+      setUserRole(data.role);
+    })();
+  }, [userId]);
+
+  // 📥 Einsätze laden (nur meine Org)
+  useEffect(() => {
+    if (!userId || !orgId) return;
+
+    (async () => {
       setDataLoading(true);
       setError("");
+
       const { data, error: err } = await supabase
         .from("einsaetze")
         .select("*")
+        .eq("org_id", orgId)
         .order("created_at", { ascending: false });
 
       if (err) {
@@ -369,7 +399,7 @@ export default function Home() {
       setEinsaetze((data ?? []).map(rowToEinsatz));
       setDataLoading(false);
     })();
-  }, [userId]);
+  }, [userId, orgId]);
 
   // ESC schließt Modal
   useEffect(() => {
@@ -469,6 +499,10 @@ export default function Home() {
   }
 
   function openNewEinsatz(preset = {}) {
+    if (!isAdmin) {
+      setError("Keine Berechtigung: Nur Admins dürfen Einsätze anlegen.");
+      return;
+    }
     resetForm();
     if (preset.datum) setDatum(preset.datum);
     setIsModalOpen(true);
@@ -495,7 +529,10 @@ export default function Home() {
 
   async function saveEinsatz() {
     setError("");
+
+    if (!isAdmin) return setError("Keine Berechtigung: Nur Admins dürfen speichern.");
     if (!userId) return setError("Kein User gefunden. Bitte neu einloggen.");
+    if (!orgId) return setError("Keine Organisation gefunden. Bitte neu einloggen.");
     if (!kunde.trim()) return setError("Bitte Kunde/Job eingeben.");
     if (!datum) return setError("Bitte Datum wählen.");
 
@@ -511,6 +548,8 @@ export default function Home() {
 
     // Update
     if (editingId !== null) {
+      const existing = einsaetze.find((x) => x.id === editingId);
+
       const updated = {
         id: editingId,
         kunde: kunde.trim(),
@@ -522,11 +561,11 @@ export default function Home() {
         dauer,
         peopleCount: pc,
         peopleList: pl,
-        status: einsaetze.find((x) => x.id === editingId)?.status ?? "geplant",
-        createdAt: einsaetze.find((x) => x.id === editingId)?.createdAt ?? null,
+        status: existing?.status ?? "geplant",
+        createdAt: existing?.createdAt ?? null,
       };
 
-      const payload = einsatzToInsertPayload(updated, userId);
+      const payload = einsatzToPayload(updated, userId, orgId);
 
       const { error: err } = await supabase.from("einsaetze").update(payload).eq("id", editingId);
       if (err) return setError(`DB-Fehler beim Update: ${err.message}`);
@@ -554,7 +593,7 @@ export default function Home() {
       createdAt: new Date().toISOString(),
     };
 
-    const payload = einsatzToInsertPayload(neu, userId);
+    const payload = einsatzToPayload(neu, userId, orgId);
 
     const { error: err } = await supabase.from("einsaetze").insert(payload);
     if (err) return setError(`DB-Fehler beim Speichern: ${err.message}`);
@@ -566,6 +605,11 @@ export default function Home() {
   }
 
   function startEdit(e) {
+    if (!isAdmin) {
+      setError("Keine Berechtigung: Viewer darf nicht bearbeiten.");
+      return;
+    }
+
     setEditingId(e.id);
     setKunde(e.kunde || "");
     setOrt(e.ort || "");
@@ -584,6 +628,8 @@ export default function Home() {
   }
 
   async function toggleErledigt(id) {
+    if (!isAdmin) return setError("Keine Berechtigung: Viewer darf nicht ändern.");
+
     const current = einsaetze.find((e) => e.id === id);
     if (!current) return;
 
@@ -605,6 +651,8 @@ export default function Home() {
   }
 
   async function loeschen(id) {
+    if (!isAdmin) return setError("Keine Berechtigung: Viewer darf nicht löschen.");
+
     if (editingId === id) resetForm();
 
     // optimistisch
@@ -620,12 +668,10 @@ export default function Home() {
 
   // Ansicht
   const viewHeight = 720;
-
-  // wichtig: gleiche Inset-Padding in Zeit- und Tag-Spalten -> kein Versatz
   const topPadPx = 14;
   const bottomPadPx = 14;
 
-  // Ticks: NUR in 60er Schritten von MIN..MAX (keine Duplikate)
+  // Ticks
   const ticks = useMemo(() => {
     const out = [];
     for (let m = MIN_TIME_MINUTES; m <= MAX_TIME_MINUTES; m += 60) {
@@ -665,11 +711,29 @@ export default function Home() {
     return <p style={{ padding: 40 }}>Lade…</p>;
   }
 
+  // Optional: wenn Org/Rolle noch lädt
+  if (!orgId || !userRole) {
+    return (
+      <main style={page}>
+        <div style={card}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>Einsatzplan</div>
+          <div style={{ opacity: 0.75 }}>Lade Organisation / Rolle…</div>
+          {error ? <div style={errorBox}>{error}</div> : null}
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main style={page}>
       <div style={headerRow}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, minWidth: 0 }}>
           <h1 style={{ margin: 0 }}>Einsatzplan</h1>
+
+          <span style={{ fontSize: 12, opacity: 0.7, whiteSpace: "nowrap" }}>
+            Rolle: <b>{userRole}</b>
+          </span>
+
           {userEmail ? (
             <span
               style={{
@@ -691,10 +755,12 @@ export default function Home() {
             Logout
           </button>
 
-          <button style={addBtn} onClick={() => openNewEinsatz()} title="Einsatz hinzufügen">
-            <span style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>+</span>
-            <span>Einsatz hinzufügen</span>
-          </button>
+          {isAdmin ? (
+            <button style={addBtn} onClick={() => openNewEinsatz()} title="Einsatz hinzufügen">
+              <span style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>+</span>
+              <span>Einsatz hinzufügen</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -824,7 +890,7 @@ export default function Home() {
                         paddingBottom: bottomPadPx,
                       }}
                       onClick={() => onDayEmptyClick(iso)}
-                      title="Klick in freie Fläche: neuen Einsatz anlegen"
+                      title={isAdmin ? "Klick in freie Fläche: neuen Einsatz anlegen" : "Viewer: keine Änderungen möglich"}
                     >
                       {/* Linien */}
                       {ticks.map((t) => (
@@ -854,7 +920,6 @@ export default function Home() {
                         const scale = scaleForDuration(durationMin);
                         const level = infoLevel(durationMin);
 
-                        // kompakter, damit nichts "unten abgeschnitten" wirkt
                         const padY = clamp(Math.round(4 * scale), 2, 8);
                         const padX = clamp(Math.round(7 * scale), 4, 12);
                         const gap = clamp(Math.round(4 * scale), 2, 8);
@@ -862,7 +927,6 @@ export default function Home() {
                         const titleFont = clamp(Math.round(12 * scale), 10, 16);
                         const subFont = clamp(Math.round(11 * scale), 9, 14);
 
-                        // Buttons kleiner möglich, außerdem optisch höher
                         const btnSize = clamp(Math.round(18 * scale), 14, 26);
                         const btnFont = clamp(Math.round(11 * scale), 9, 15);
 
@@ -875,10 +939,10 @@ export default function Home() {
                         return (
                           <div
                             key={e.id}
-                            title="Klick: Details/Bearbeiten"
+                            title={isAdmin ? "Klick: Details/Bearbeiten" : "Viewer: nur ansehen"}
                             onClick={(ev) => {
                               ev.stopPropagation();
-                              startEdit(e);
+                              if (isAdmin) startEdit(e);
                             }}
                             style={{
                               position: "absolute",
@@ -887,7 +951,7 @@ export default function Home() {
                               left: innerPad,
                               width: `calc(100% - ${innerPad * 2}px)`,
                               boxSizing: "border-box",
-                              cursor: "pointer",
+                              cursor: isAdmin ? "pointer" : "default",
                             }}
                           >
                             <div
@@ -911,7 +975,7 @@ export default function Home() {
                                 boxSizing: "border-box",
                               }}
                             >
-                              {/* Header immer: Job + Buttons */}
+                              {/* Header: Job + Buttons (Buttons nur Admin) */}
                               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
                                 <div
                                   style={{
@@ -928,46 +992,47 @@ export default function Home() {
                                   {e.kunde}
                                 </div>
 
-                                <div style={{ display: "flex", gap: 6, flexShrink: 0, marginTop: -1 }}>
-                                  <button
-                                    onClick={(ev) => {
-                                      ev.stopPropagation();
-                                      toggleErledigt(e.id);
-                                    }}
-                                    style={{
-                                      ...tinyActionBtnCompact,
-                                      width: btnSize,
-                                      height: btnSize,
-                                      lineHeight: `${btnSize - 2}px`,
-                                      fontSize: btnFont,
-                                      borderColor: isDone ? "#2e7d32" : "#111",
-                                    }}
-                                    title={isDone ? "Zurück (geplant)" : "Erledigt"}
-                                  >
-                                    {isDone ? "↩" : "✓"}
-                                  </button>
+                                {isAdmin ? (
+                                  <div style={{ display: "flex", gap: 6, flexShrink: 0, marginTop: -1 }}>
+                                    <button
+                                      onClick={(ev) => {
+                                        ev.stopPropagation();
+                                        toggleErledigt(e.id);
+                                      }}
+                                      style={{
+                                        ...tinyActionBtnCompact,
+                                        width: btnSize,
+                                        height: btnSize,
+                                        lineHeight: `${btnSize - 2}px`,
+                                        fontSize: btnFont,
+                                        borderColor: isDone ? "#2e7d32" : "#111",
+                                      }}
+                                      title={isDone ? "Zurück (geplant)" : "Erledigt"}
+                                    >
+                                      {isDone ? "↩" : "✓"}
+                                    </button>
 
-                                  <button
-                                    onClick={(ev) => {
-                                      ev.stopPropagation();
-                                      loeschen(e.id);
-                                    }}
-                                    style={{
-                                      ...tinyActionBtnCompact,
-                                      width: btnSize,
-                                      height: btnSize,
-                                      lineHeight: `${btnSize - 2}px`,
-                                      fontSize: btnFont,
-                                      borderColor: "#c33",
-                                    }}
-                                    title="Löschen"
-                                  >
-                                    ×
-                                  </button>
-                                </div>
+                                    <button
+                                      onClick={(ev) => {
+                                        ev.stopPropagation();
+                                        loeschen(e.id);
+                                      }}
+                                      style={{
+                                        ...tinyActionBtnCompact,
+                                        width: btnSize,
+                                        height: btnSize,
+                                        lineHeight: `${btnSize - 2}px`,
+                                        fontSize: btnFont,
+                                        borderColor: "#c33",
+                                      }}
+                                      title="Löschen"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ) : null}
                               </div>
 
-                              {/* Unterinfos nur wenn genug Platz */}
                               {level >= 1 ? (
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                                   <span style={{ ...miniPill(isDone, plannedText), fontSize: subFont }}>
@@ -1017,7 +1082,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* MODAL */}
+      {/* MODAL (nur Admin erreichbar) */}
       {isModalOpen ? (
         <div
           style={modalOverlay}
@@ -1154,7 +1219,9 @@ export default function Home() {
                 </div>
               </div>
 
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>Tipp: <b>ESC</b> schließt • Klick auf Hintergrund schließt</div>
+              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+                Tipp: <b>ESC</b> schließt • Klick auf Hintergrund schließt
+              </div>
             </div>
           </div>
         </div>
