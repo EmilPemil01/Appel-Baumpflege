@@ -58,7 +58,7 @@ export async function POST(req: Request) {
     const { data: users, error: listErr } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
     if (listErr) return NextResponse.json({ error: "User lookup fehlgeschlagen" }, { status: 500 });
 
-    const u = users.users.find((x) => x.email?.toLowerCase() === email);
+   const u = (users.users as any[]).find((x) => x.email?.toLowerCase() === email);
     if (!u) return NextResponse.json({ error: createErr?.message ?? "User existiert, aber nicht gefunden" }, { status: 400 });
 
     userId = u.id;
